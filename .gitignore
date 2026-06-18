@@ -1,0 +1,30 @@
+# Gradle
+.gradle/
+build/
+out/
+classes/
+run/
+run-data/
+repo/
+*.log
+
+# IntelliJ / Eclipse / VS Code
+.idea/
+*.iml
+*.iws
+*.ipr
+.eclipse/
+.metadata/
+.classpath
+.project
+.settings/
+.vscode/
+bin/
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Forge / MC
+logs/

@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "games.brennan.enderchestpersistence.fabric.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "GameModeChangeMixin"
+  ],
+  "client": [],
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
