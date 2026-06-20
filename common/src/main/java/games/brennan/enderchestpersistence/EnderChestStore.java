@@ -16,9 +16,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Per-player, per-game-mode Ender Chest contents that persist outside any
@@ -30,6 +32,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * Switching game modes triggers an immediate swap via {@link #swapGameMode},
  * so the live {@link PlayerEnderChestContainer} always reflects the current
  * mode.</p>
+ *
+ * <p>An external mod can override the slot a player maps to — independent of
+ * game mode — via {@link #registerSlotProvider} (passive) and
+ * {@link #refreshSlot} (an immediate mid-session swap). This lets a host mod
+ * lock a "cheated"/Free-Play run onto a separate slot so it never touches the
+ * player's legit chest.</p>
  */
 public final class EnderChestStore {
 
@@ -39,7 +47,41 @@ public final class EnderChestStore {
     /** In-memory cache: UUID → root tag (null = nothing ever saved). */
     private static final Map<UUID, CompoundTag> CACHE = new ConcurrentHashMap<>();
 
+    /**
+     * UUID → the slot key currently materialized in the player's live ender
+     * chest. Set on {@link #restore}, updated on every swap. Lets the store
+     * snapshot the live contents back to the right slot even when a provider
+     * has overridden the slot away from the player's actual game mode.
+     */
+    private static final Map<UUID, String> APPLIED = new ConcurrentHashMap<>();
+
+    /** External slot-key overrides, consulted in registration order. */
+    private static final List<SlotKeyProvider> SLOT_PROVIDERS = new CopyOnWriteArrayList<>();
+
     private EnderChestStore() {}
+
+    /**
+     * Lets another mod override which slot a player's ender chest maps to,
+     * independent of their game mode — e.g. lock a "cheated"/Free-Play run onto
+     * a disposable slot so it can't read or write the player's legit chest.
+     * Register via {@link #registerSlotProvider}; trigger an immediate live swap
+     * with {@link #refreshSlot} when the verdict changes mid-session.
+     */
+    @FunctionalInterface
+    public interface SlotKeyProvider {
+        /**
+         * @param player     the online player whose ender-chest slot is resolving
+         * @param defaultKey the key in effect so far (the game-mode key, or the
+         *                   running result of earlier providers)
+         * @return an override slot key, or {@code null} to defer (keep {@code defaultKey})
+         */
+        String overrideSlotKey(ServerPlayer player, String defaultKey);
+    }
+
+    /** Register a slot-key override provider. Thread-safe. */
+    public static void registerSlotProvider(SlotKeyProvider provider) {
+        SLOT_PROVIDERS.add(provider);
+    }
 
     public static Path file(UUID uuid) {
         return ConfigDir.get().resolve(DIR_NAME).resolve(uuid + ".dat");
@@ -53,11 +95,14 @@ public final class EnderChestStore {
      * Called on player logout.
      */
     public static void save(ServerPlayer player) {
-        String mode = currentMode(player);
+        UUID uuid = player.getUUID();
+        // Write to the slot the live chest actually represents (APPLIED), which may
+        // differ from the game-mode slot when a provider has locked the player.
+        String key = APPLIED.getOrDefault(uuid, currentKey(player));
         ListTag items = player.getEnderChestInventory().createTag(player.registryAccess());
-        updateCache(player.getUUID(), mode, items);
+        updateCache(uuid, key, items);
         LOGGER.debug("[EnderChestPersistence] saved {} item stack(s) for {} ({})",
-                items.size(), player.getName().getString(), mode);
+                items.size(), player.getName().getString(), key);
     }
 
     /**
@@ -67,14 +112,17 @@ public final class EnderChestStore {
      */
     public static void restore(ServerPlayer player) {
         UUID uuid = player.getUUID();
-        String mode = currentMode(player);
+        String key = currentKey(player);
         CompoundTag root = CACHE.computeIfAbsent(uuid, EnderChestStore::loadFromDisk);
-        if (root == null || !root.contains(mode, Tag.TAG_LIST)) return;
-        ListTag items = root.getList(mode, Tag.TAG_COMPOUND);
+        // Record the slot now in effect even when nothing is stored for it (the
+        // freshly-constructed live chest is empty, i.e. it already represents this slot).
+        APPLIED.put(uuid, key);
+        if (root == null || !root.contains(key, Tag.TAG_LIST)) return;
+        ListTag items = root.getList(key, Tag.TAG_COMPOUND);
         player.getEnderChestInventory().fromTag(items, player.registryAccess());
         if (!items.isEmpty()) {
             LOGGER.info("[EnderChestPersistence] restored {} item stack(s) for {} ({})",
-                    items.size(), player.getName().getString(), mode);
+                    items.size(), player.getName().getString(), key);
         }
     }
 
@@ -86,27 +134,62 @@ public final class EnderChestStore {
      */
     public static void swapGameMode(ServerPlayer player, GameType newMode) {
         UUID uuid = player.getUUID();
-        String oldModeKey = currentMode(player);
-        String newModeKey = newMode.getSerializedName();
+        String oldKey = APPLIED.getOrDefault(uuid, currentMode(player));
+        String newKey = resolveKey(player, newMode.getSerializedName());
+        if (oldKey.equals(newKey)) {       // e.g. a locked run stays on its slot
+            APPLIED.put(uuid, newKey);
+            return;
+        }
+        applySlot(player, oldKey, newKey);
+        LOGGER.info("[EnderChestPersistence] swapped ender chest {} → {} for {}",
+                oldKey, newKey, player.getName().getString());
+    }
 
+    /**
+     * Re-evaluate the slot providers for an online player and, if the effective
+     * slot has changed since it was last materialized, snapshot the live chest
+     * back to its current slot and load the new slot into the live container.
+     * Idempotent — a no-op when the slot is unchanged.
+     *
+     * <p>Call this when a provider's verdict flips mid-session (e.g. a run
+     * becomes locked while the player is logged in), so the live chest is swapped
+     * immediately rather than only on the next login / game-mode change.</p>
+     */
+    public static void refreshSlot(ServerPlayer player) {
+        UUID uuid = player.getUUID();
+        String oldKey = APPLIED.getOrDefault(uuid, currentMode(player));
+        String newKey = currentKey(player);
+        if (oldKey.equals(newKey)) {
+            APPLIED.put(uuid, newKey);
+            return;
+        }
+        applySlot(player, oldKey, newKey);
+        LOGGER.info("[EnderChestPersistence] locked ender chest {} → {} for {}",
+                oldKey, newKey, player.getName().getString());
+    }
+
+    /**
+     * Snapshot the live chest into {@code oldKey}, then load {@code newKey} into
+     * the live container (clearing it if nothing is stored for {@code newKey}).
+     * Updates {@link #APPLIED} to {@code newKey}.
+     */
+    private static void applySlot(ServerPlayer player, String oldKey, String newKey) {
+        UUID uuid = player.getUUID();
         ListTag oldItems = player.getEnderChestInventory().createTag(player.registryAccess());
         CompoundTag root = CACHE.compute(uuid, (k, existing) -> {
             CompoundTag r = existing != null ? existing : loadFromDisk(k);
             if (r == null) r = new CompoundTag();
-            r.put(oldModeKey, oldItems);
+            r.put(oldKey, oldItems);
             return r;
         });
 
         PlayerEnderChestContainer enderChest = player.getEnderChestInventory();
-        if (root.contains(newModeKey, Tag.TAG_LIST)) {
-            ListTag newItems = root.getList(newModeKey, Tag.TAG_COMPOUND);
-            enderChest.fromTag(newItems, player.registryAccess());
+        if (root.contains(newKey, Tag.TAG_LIST)) {
+            enderChest.fromTag(root.getList(newKey, Tag.TAG_COMPOUND), player.registryAccess());
         } else {
             enderChest.clearContent();
         }
-
-        LOGGER.info("[EnderChestPersistence] swapped ender chest {} → {} for {}",
-                oldModeKey, newModeKey, player.getName().getString());
+        APPLIED.put(uuid, newKey);
     }
 
     /** Write the cached entry for {@code uuid} to disk. No-op if not in cache. */
@@ -119,6 +202,7 @@ public final class EnderChestStore {
     /** Drop the cached entry. Used on logout after {@link #flush}. */
     public static void evict(UUID uuid) {
         CACHE.remove(uuid);
+        APPLIED.remove(uuid);
     }
 
     /** Flush every cached player. Called on server stop. */
@@ -133,6 +217,21 @@ public final class EnderChestStore {
 
     private static String currentMode(ServerPlayer player) {
         return player.gameMode.getGameModeForPlayer().getSerializedName();
+    }
+
+    /** The game-mode slot key after applying any registered provider overrides. */
+    private static String currentKey(ServerPlayer player) {
+        return resolveKey(player, currentMode(player));
+    }
+
+    /** Fold the registered providers over {@code defaultKey}; non-null overrides win. */
+    private static String resolveKey(ServerPlayer player, String defaultKey) {
+        String key = defaultKey;
+        for (SlotKeyProvider provider : SLOT_PROVIDERS) {
+            String override = provider.overrideSlotKey(player, key);
+            if (override != null) key = override;
+        }
+        return key;
     }
 
     private static void updateCache(UUID uuid, String modeKey, ListTag items) {
