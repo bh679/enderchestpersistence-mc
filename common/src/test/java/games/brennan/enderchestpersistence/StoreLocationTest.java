@@ -67,6 +67,14 @@ class StoreLocationTest {
     }
 
     @Test
+    void offStillReportsTheInstanceDirectoryToCallers() {
+        // A host mod's profile reset asks for the directory in order to delete a stash left behind by
+        // a previous mode. Under 'off' there is no active store, but there may well be a stale file.
+        StoreLocation.reset();
+        assertEquals(INSTANCE_STORE, resolve(StoreMode.OFF, false, WRITABLE).instanceDir());
+    }
+
+    @Test
     void anUnwritableAppDataDirectoryFallsBackToTheInstance() {
         // A read-only or missing home directory must cost the player portability, never their chest.
         StoreLocation.Resolution resolution = resolve(StoreMode.OUTSIDE, false, UNWRITABLE);

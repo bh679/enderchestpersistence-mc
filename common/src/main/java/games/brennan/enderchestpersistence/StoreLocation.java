@@ -103,7 +103,11 @@ public final class StoreLocation {
     /**
      * The directory holding {@code <uuid>.dat}.
      *
-     * @throws IllegalStateException if the mode is {@link StoreMode#OFF} — nothing should be asking
+     * <p>Always answers with a path, never throws. Under {@link StoreMode#OFF} nothing is being
+     * persisted, but a file left behind by a previous mode may still be sitting in the instance
+     * directory — and that is the answer callers want. Dungeon Train's profile reset, for one, asks
+     * this to find and delete a stale stash ({@code EnderChestResetBridge}); throwing here would take
+     * its reset screen down instead of clearing the leftover file.</p>
      */
     public static Path dir() {
         Resolution current = resolution;
@@ -113,10 +117,8 @@ public final class StoreLocation {
             LOGGER.warn("[EnderChestPersistence] store location requested before init — assuming 'inside'.");
             return ConfigDir.get().resolve(DIR_NAME);
         }
-        if (current.mode() == StoreMode.OFF) {
-            throw new IllegalStateException("[EnderChestPersistence] no store directory when store-location=off");
-        }
-        return current.dir();
+        // Resolution.dir() is null only under OFF, where the instance directory is the right answer.
+        return current.dir() != null ? current.dir() : current.instanceDir();
     }
 
     /** The instance-local directory, whether or not it is the one in use. */
