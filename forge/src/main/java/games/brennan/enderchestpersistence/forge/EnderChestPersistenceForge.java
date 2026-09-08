@@ -2,9 +2,11 @@ package games.brennan.enderchestpersistence.forge;
 
 import games.brennan.enderchestpersistence.ConfigDir;
 import games.brennan.enderchestpersistence.EnderChestStore;
+import games.brennan.enderchestpersistence.StoreLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.IEventBus;
@@ -19,10 +21,19 @@ public final class EnderChestPersistenceForge {
     public EnderChestPersistenceForge(IEventBus modBus) {
         ConfigDir.set(FMLPaths.CONFIGDIR.get());
 
+        MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onServerStarting);
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onPlayerLogin);
         MinecraftForge.EVENT_BUS.addListener(EventPriority.LOW, EnderChestPersistenceForge::onPlayerChangeGameMode);
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onPlayerLoggedOut);
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onServerStopping);
+    }
+
+    /**
+     * Resolve the store directory before anyone can log in — {@link StoreLocation} needs to know
+     * whether this is a dedicated server, which only the running server can say.
+     */
+    private static void onServerStarting(ServerStartingEvent event) {
+        StoreLocation.init(event.getServer().isDedicatedServer());
     }
 
     private static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {

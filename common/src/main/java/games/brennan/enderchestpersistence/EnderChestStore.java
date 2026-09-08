@@ -24,8 +24,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Per-player, per-game-mode Ender Chest contents that persist outside any
- * individual world save. Stored at
- * {@code <config>/enderchestpersistence/<uuid>.dat}.
+ * individual world save, as {@code <uuid>.dat} under the directory
+ * {@link StoreLocation} resolves — the machine's application-data folder by
+ * default, or this instance's config folder. See {@link StoreMode}.
  *
  * <p>Separate inventories are maintained per {@link GameType}: survival,
  * creative, adventure, and spectator each have their own 27-slot snapshot.
@@ -38,11 +39,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * {@link #refreshSlot} (an immediate mid-session swap). This lets a host mod
  * lock a "cheated"/Free-Play run onto a separate slot so it never touches the
  * player's legit chest.</p>
+ *
+ * <p>Every entry point is a no-op under {@link StoreMode#OFF}, which leaves the Ender Chest to
+ * vanilla. That includes the slot swaps, so a host mod's chest isolation stops isolating — the
+ * config file says as much where a player will read it.</p>
  */
 public final class EnderChestStore {
 
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final String DIR_NAME = "enderchestpersistence";
 
     /** In-memory cache: UUID → root tag (null = nothing ever saved). */
     private static final Map<UUID, CompoundTag> CACHE = new ConcurrentHashMap<>();
@@ -83,8 +87,18 @@ public final class EnderChestStore {
         SLOT_PROVIDERS.add(provider);
     }
 
+    /** The store file for {@code uuid}, in whichever directory the configured mode resolved to. */
     public static Path file(UUID uuid) {
-        return ConfigDir.get().resolve(DIR_NAME).resolve(uuid + ".dat");
+        return StoreLocation.dir().resolve(fileName(uuid));
+    }
+
+    /** The same file as it would sit in this instance's config folder, whether or not that is in use. */
+    private static Path instanceFile(UUID uuid) {
+        return StoreLocation.instanceDir().resolve(fileName(uuid));
+    }
+
+    private static String fileName(UUID uuid) {
+        return uuid + ".dat";
     }
 
     // ---- Public API ----
@@ -95,6 +109,7 @@ public final class EnderChestStore {
      * Called on player logout.
      */
     public static void save(ServerPlayer player) {
+        if (!StoreLocation.enabled()) return;
         UUID uuid = player.getUUID();
         // Write to the slot the live chest actually represents (APPLIED), which may
         // differ from the game-mode slot when a provider has locked the player.
@@ -111,6 +126,7 @@ public final class EnderChestStore {
      * Called on every player login.
      */
     public static void restore(ServerPlayer player) {
+        if (!StoreLocation.enabled()) return;
         UUID uuid = player.getUUID();
         String key = currentKey(player);
         CompoundTag root = CACHE.computeIfAbsent(uuid, EnderChestStore::loadFromDisk);
@@ -133,6 +149,7 @@ public final class EnderChestStore {
      * the player is switching to.
      */
     public static void swapGameMode(ServerPlayer player, GameType newMode) {
+        if (!StoreLocation.enabled()) return;
         UUID uuid = player.getUUID();
         String oldKey = APPLIED.getOrDefault(uuid, currentMode(player));
         String newKey = resolveKey(player, newMode.getSerializedName());
@@ -156,6 +173,7 @@ public final class EnderChestStore {
      * immediately rather than only on the next login / game-mode change.</p>
      */
     public static void refreshSlot(ServerPlayer player) {
+        if (!StoreLocation.enabled()) return;
         UUID uuid = player.getUUID();
         String oldKey = APPLIED.getOrDefault(uuid, currentMode(player));
         String newKey = currentKey(player);
@@ -194,6 +212,7 @@ public final class EnderChestStore {
 
     /** Write the cached entry for {@code uuid} to disk. No-op if not in cache. */
     public static void flush(UUID uuid) {
+        if (!StoreLocation.enabled()) return;
         CompoundTag tag = CACHE.get(uuid);
         if (tag == null) return;
         saveToDisk(uuid, tag);
@@ -207,6 +226,7 @@ public final class EnderChestStore {
 
     /** Flush every cached player. Called on server stop. */
     public static void flushAll() {
+        if (!StoreLocation.enabled()) return;
         Map<UUID, CompoundTag> snapshot = new HashMap<>(CACHE);
         for (var entry : snapshot.entrySet()) {
             saveToDisk(entry.getKey(), entry.getValue());
@@ -245,6 +265,11 @@ public final class EnderChestStore {
 
     private static CompoundTag loadFromDisk(UUID uuid) {
         Path path = file(uuid);
+        // First read after the store moved out of the instance: carry the old file across rather than
+        // reporting an empty chest, which is precisely the failure this mode exists to prevent.
+        if (StoreLocation.mode() == StoreMode.OUTSIDE) {
+            StoreSeeder.seedIfMissing(path, instanceFile(uuid));
+        }
         if (!Files.isRegularFile(path)) return null;
         try {
             return NbtIo.readCompressed(path, NbtAccounter.unlimitedHeap());
