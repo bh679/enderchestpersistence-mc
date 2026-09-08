@@ -2,6 +2,7 @@ package games.brennan.enderchestpersistence.fabric;
 
 import games.brennan.enderchestpersistence.ConfigDir;
 import games.brennan.enderchestpersistence.EnderChestStore;
+import games.brennan.enderchestpersistence.StoreLocation;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -20,6 +21,12 @@ public final class EnderChestPersistenceFabric implements ModInitializer {
     @Override
     public void onInitialize() {
         ConfigDir.set(FabricLoader.getInstance().getConfigDir());
+
+        // Resolve the store directory before anyone can log in — StoreLocation needs to know
+        // whether this is a dedicated server, which only the running server can say.
+        ServerLifecycleEvents.SERVER_STARTING.register(server ->
+            StoreLocation.init(server.isDedicatedServer())
+        );
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
             EnderChestStore.restore(handler.player)

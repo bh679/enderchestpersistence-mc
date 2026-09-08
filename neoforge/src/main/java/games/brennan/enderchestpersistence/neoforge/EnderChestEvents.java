@@ -1,11 +1,13 @@
 package games.brennan.enderchestpersistence.neoforge;
 
 import games.brennan.enderchestpersistence.EnderChestStore;
+import games.brennan.enderchestpersistence.StoreLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 
 import java.util.UUID;
@@ -18,6 +20,15 @@ import java.util.UUID;
 public final class EnderChestEvents {
 
     private EnderChestEvents() {}
+
+    /**
+     * Resolve the store directory before anyone can log in — {@link StoreLocation} needs to know
+     * whether this is a dedicated server, which only the running server can say.
+     */
+    @SubscribeEvent
+    public static void onServerStarting(ServerStartingEvent event) {
+        StoreLocation.init(event.getServer().isDedicatedServer());
+    }
 
     @SubscribeEvent
     public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {

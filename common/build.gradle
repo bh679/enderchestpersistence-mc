@@ -18,6 +18,19 @@ test {
     useJUnitPlatform()
 }
 
+/**
+ * Walk the launcher-migration scenario over real files on disk, printing each step.
+ *   ./gradlew :common:migrationDemo                       (writes under the system temp dir)
+ *   ./gradlew :common:migrationDemo --args="/some/dir"    (writes there instead)
+ * The demo class lives in the test source set, so it never ships in the mod jar.
+ */
+tasks.register("migrationDemo", JavaExec) {
+    group = "verification"
+    description = "Run the Ender Chest store-location migration against real files and print each step."
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = "games.brennan.enderchestpersistence.MigrationDemo"
+}
+
 publishing {
     publications {
         mavenCommon(MavenPublication) {
