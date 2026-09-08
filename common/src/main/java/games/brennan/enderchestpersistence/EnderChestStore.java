@@ -263,13 +263,22 @@ public final class EnderChestStore {
         });
     }
 
+    /**
+     * On the first read after the store moved out of the instance, carry the old file across rather
+     * than reporting an empty chest — precisely the failure {@link StoreMode#OUTSIDE} exists to
+     * prevent. No-op in every other mode, so neither {@code inside} nor {@code off} can move a
+     * player's data unasked.
+     *
+     * @return true if a file was carried across
+     */
+    static boolean seedFromInstanceIfNeeded(UUID uuid) {
+        if (StoreLocation.mode() != StoreMode.OUTSIDE) return false;
+        return StoreSeeder.seedIfMissing(file(uuid), instanceFile(uuid));
+    }
+
     private static CompoundTag loadFromDisk(UUID uuid) {
+        seedFromInstanceIfNeeded(uuid);
         Path path = file(uuid);
-        // First read after the store moved out of the instance: carry the old file across rather than
-        // reporting an empty chest, which is precisely the failure this mode exists to prevent.
-        if (StoreLocation.mode() == StoreMode.OUTSIDE) {
-            StoreSeeder.seedIfMissing(path, instanceFile(uuid));
-        }
         if (!Files.isRegularFile(path)) return null;
         try {
             return NbtIo.readCompressed(path, NbtAccounter.unlimitedHeap());

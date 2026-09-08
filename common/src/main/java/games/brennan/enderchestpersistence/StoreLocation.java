@@ -39,8 +39,15 @@ public final class StoreLocation {
      *                        server on the host, which is never what an operator means
      */
     public static void init(boolean dedicatedServer) {
-        StoreMode configured = EcpConfig.readStoreMode(ConfigDir.get());
-        resolution = resolve(configured, dedicatedServer, ConfigDir.get(), AppDataDir.resolve(),
+        init(EcpConfig.readStoreMode(ConfigDir.get()), dedicatedServer, ConfigDir.get(), AppDataDir.resolve());
+    }
+
+    /**
+     * {@link #init(boolean)} with every input named, so the migration path can be driven against
+     * temporary directories in tests instead of the developer's real application-data folder.
+     */
+    static void init(StoreMode configured, boolean dedicatedServer, Path configDir, Path appDataRoot) {
+        resolution = resolve(configured, dedicatedServer, configDir, appDataRoot,
                 StoreLocation::ensureWritable);
 
         if (configured == StoreMode.OFF) {
