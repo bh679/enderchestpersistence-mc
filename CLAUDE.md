@@ -15,7 +15,8 @@ resets, with per-game-mode isolation. Extracted from Dungeon Train (bh679/dungeo
 ## Structure
 
 - `common/` — `EnderChestStore` (core logic), `ConfigDir` (loader-agnostic path holder),
-  `StoreMode`/`EcpConfig`/`StoreLocation`/`AppDataDir`/`StoreSeeder` (where the store lives)
+  `StoreMode`/`EcpConfig`/`StoreLocation`/`AppDataDir`/`StoreSeeder` (where the store lives),
+  `StoreFile`/`WriteGuard` (the .bak + never-overwrite-unreadable safety net)
 - `neoforge/` — `EnderChestPersistenceNeoForge` (@Mod), `EnderChestEvents` (@EventBusSubscriber)
 - `fabric/` — `EnderChestPersistenceFabric` (ModInitializer + Fabric events), `GameModeChangeMixin`
 - `forge/` — `EnderChestPersistenceForge` (@Mod + Forge events)
@@ -44,6 +45,23 @@ Three things about this are load-bearing and easy to break:
 
 Everything that varies by platform is a parameter (`AppDataDir.resolve`, `StoreLocation.resolve`),
 so all three OS branches and the fallbacks are unit-tested wherever the tests happen to run.
+
+## Safety net around the file (since 0.4.0)
+
+All reads and writes of `<uuid>.dat` go through `StoreFile`; `EnderChestStore` never touches
+`NbtIo` directly. Two guarantees, both zero-config, both unit-tested over real files:
+
+1. **`<uuid>.dat.bak` is the last version that held any items.** Rotated on write only when the file
+   being replaced has ≥ 1 stack in any slot, so a loss followed by empty sessions never displaces it.
+   A player recovers by renaming it to `.dat` with the game closed (the default config says so).
+2. **An unreadable file is never written over.** `StoreFile.read` retries, then falls back to the
+   `.bak` (main set aside as `.dat.corrupt-<stamp>`, `.bak` copied back). With no usable `.bak` it
+   reports `UNREADABLE`, `EnderChestStore` puts the UUID in `WriteGuard`, and every write path
+   (`save`, `applySlot`, `flush`, `flushAll`) refuses with an ERROR until logout clears it.
+
+The guard is deliberately narrow: a player who empties their own chest still saves as empty.
+Refusing that would hand the items back on relog — a dupe. `restore()` logs its outcome at INFO on
+every login so an "empty chest" report can be diagnosed from `latest.log`.
 
 ## Standards
 
