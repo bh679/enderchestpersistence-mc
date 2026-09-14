@@ -3,18 +3,13 @@ package games.brennan.enderchestpersistence;
 import com.mojang.logging.LogUtils;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.NbtAccounter;
-import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.PlayerEnderChestContainer;
 import net.minecraft.world.level.GameType;
 import org.slf4j.Logger;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +38,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>Every entry point is a no-op under {@link StoreMode#OFF}, which leaves the Ender Chest to
  * vanilla. That includes the slot swaps, so a host mod's chest isolation stops isolating — the
  * config file says as much where a player will read it.</p>
+ *
+ * <p>Two safety nets sit under every write, both in {@link StoreFile}: {@code <uuid>.dat.bak}
+ * always holds the last version that contained items (restore by hand: close the game, rename it to
+ * {@code .dat}), and a file that exists but cannot be read is never written over — the player gets an
+ * empty chest for the session and an ERROR in the log, but their stash stays on disk
+ * ({@link WriteGuard}).</p>
  */
 public final class EnderChestStore {
 
@@ -115,6 +116,7 @@ public final class EnderChestStore {
         // differ from the game-mode slot when a provider has locked the player.
         String key = APPLIED.getOrDefault(uuid, currentKey(player));
         ListTag items = player.getEnderChestInventory().createTag(player.registryAccess());
+        if (refuseIfBlocked(uuid, "save " + items.size() + " item stack(s) to slot '" + key + "'")) return;
         updateCache(uuid, key, items);
         LOGGER.debug("[EnderChestPersistence] saved {} item stack(s) for {} ({})",
                 items.size(), player.getName().getString(), key);
@@ -124,22 +126,39 @@ public final class EnderChestStore {
      * Apply the stored Ender Chest contents for the player's current game mode.
      * No-op if nothing has been stored for this UUID and game mode.
      * Called on every player login.
+     *
+     * <p>Always logs the outcome at INFO, so a "my chest is empty" report can be diagnosed from
+     * {@code latest.log}: what was on disk, which slot was asked for, how many stacks came back.</p>
      */
     public static void restore(ServerPlayer player) {
         if (!StoreLocation.enabled()) return;
         UUID uuid = player.getUUID();
+        String name = player.getName().getString();
         String key = currentKey(player);
         CompoundTag root = CACHE.computeIfAbsent(uuid, EnderChestStore::loadFromDisk);
         // Record the slot now in effect even when nothing is stored for it (the
         // freshly-constructed live chest is empty, i.e. it already represents this slot).
         APPLIED.put(uuid, key);
-        if (root == null || !root.contains(key, Tag.TAG_LIST)) return;
+        if (WriteGuard.isBlocked(uuid)) {
+            LOGGER.error("[EnderChestPersistence] {}'s Ender Chest was NOT loaded — {} could not be read."
+                    + " The chest will be empty this session and the file will not be overwritten;"
+                    + " fix or restore the file, then relog.", name, file(uuid));
+            return;
+        }
+        if (root == null) {
+            LOGGER.info("[EnderChestPersistence] no stored Ender Chest for {} at {} — starting empty ({})",
+                    name, file(uuid), key);
+            return;
+        }
+        if (!root.contains(key, Tag.TAG_LIST)) {
+            LOGGER.info("[EnderChestPersistence] {} has no slot '{}' in {} ({} stack(s) in other slots)"
+                    + " — starting empty", name, key, file(uuid).getFileName(), StoreFile.itemCount(root));
+            return;
+        }
         ListTag items = root.getList(key, Tag.TAG_COMPOUND);
         player.getEnderChestInventory().fromTag(items, player.registryAccess());
-        if (!items.isEmpty()) {
-            LOGGER.info("[EnderChestPersistence] restored {} item stack(s) for {} ({})",
-                    items.size(), player.getName().getString(), key);
-        }
+        LOGGER.info("[EnderChestPersistence] restored {} item stack(s) for {} ({})",
+                items.size(), name, key);
     }
 
     /**
@@ -193,6 +212,7 @@ public final class EnderChestStore {
      */
     private static void applySlot(ServerPlayer player, String oldKey, String newKey) {
         UUID uuid = player.getUUID();
+        if (refuseIfBlocked(uuid, "swap slot '" + oldKey + "' -> '" + newKey + "'")) return;
         ListTag oldItems = player.getEnderChestInventory().createTag(player.registryAccess());
         CompoundTag root = CACHE.compute(uuid, (k, existing) -> {
             CompoundTag r = existing != null ? existing : loadFromDisk(k);
@@ -215,13 +235,15 @@ public final class EnderChestStore {
         if (!StoreLocation.enabled()) return;
         CompoundTag tag = CACHE.get(uuid);
         if (tag == null) return;
+        if (refuseIfBlocked(uuid, "flush")) return;
         saveToDisk(uuid, tag);
     }
 
-    /** Drop the cached entry. Used on logout after {@link #flush}. */
+    /** Drop the cached entry and lift any write block. Used on logout after {@link #flush}. */
     public static void evict(UUID uuid) {
         CACHE.remove(uuid);
         APPLIED.remove(uuid);
+        WriteGuard.clear(uuid);
     }
 
     /** Flush every cached player. Called on server stop. */
@@ -229,8 +251,21 @@ public final class EnderChestStore {
         if (!StoreLocation.enabled()) return;
         Map<UUID, CompoundTag> snapshot = new HashMap<>(CACHE);
         for (var entry : snapshot.entrySet()) {
+            if (refuseIfBlocked(entry.getKey(), "flush on server stop")) continue;
             saveToDisk(entry.getKey(), entry.getValue());
         }
+    }
+
+    /**
+     * True — and logged — when {@link WriteGuard} forbids touching {@code uuid}'s file this session.
+     * {@code action} names what was refused, for the log line.
+     */
+    private static boolean refuseIfBlocked(UUID uuid, String action) {
+        if (!WriteGuard.isBlocked(uuid)) return false;
+        LOGGER.error("[EnderChestPersistence] refusing to {} for {} — the stored file {} could not be"
+                + " read at login, so writing now would replace a stash the player still owns.",
+                action, uuid, file(uuid));
+        return true;
     }
 
     // ---- Internals ----
@@ -276,36 +311,22 @@ public final class EnderChestStore {
         return StoreSeeder.seedIfMissing(file(uuid), instanceFile(uuid));
     }
 
+    /**
+     * Read the player's file through {@link StoreFile}. An unreadable file with no usable backup
+     * blocks every write for this UUID until logout, so the file survives the session intact.
+     *
+     * @return the stored root tag, or null when nothing is stored or nothing could be read
+     */
     private static CompoundTag loadFromDisk(UUID uuid) {
         seedFromInstanceIfNeeded(uuid);
-        Path path = file(uuid);
-        if (!Files.isRegularFile(path)) return null;
-        try {
-            return NbtIo.readCompressed(path, NbtAccounter.unlimitedHeap());
-        } catch (IOException e) {
-            LOGGER.warn("[EnderChestPersistence] I/O error reading {}: {}", path, e.getMessage());
-            return null;
+        StoreFile.Loaded loaded = StoreFile.read(file(uuid));
+        if (loaded.outcome() == StoreFile.Outcome.UNREADABLE) {
+            WriteGuard.block(uuid);
         }
+        return loaded.tag();
     }
 
     private static synchronized void saveToDisk(UUID uuid, CompoundTag tag) {
-        Path path = file(uuid);
-        try {
-            Files.createDirectories(path.getParent());
-        } catch (IOException e) {
-            LOGGER.error("[EnderChestPersistence] failed to create dir {}: {}", path.getParent(), e.getMessage());
-            return;
-        }
-        Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
-        try {
-            NbtIo.writeCompressed(tag, tmp);
-            Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            try {
-                Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e2) {
-                LOGGER.error("[EnderChestPersistence] rename {} -> {} failed: {}", tmp, path, e2.getMessage());
-            }
-        }
+        StoreFile.write(file(uuid), tag);
     }
 }
