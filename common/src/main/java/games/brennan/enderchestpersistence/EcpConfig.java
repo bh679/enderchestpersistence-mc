@@ -104,6 +104,11 @@ public final class EcpConfig {
             #
             # Switching from 'inside' to 'outside' copies your existing chest across on the next
             # login and leaves the original in place, so nothing is lost either way.
+            #
+            # Next to each <uuid>.dat you may find <uuid>.dat.bak -- the last version that held any
+            # items, kept automatically. If a chest ever comes up empty, close the game and rename
+            # the .bak to .dat. A <uuid>.dat.corrupt-<timestamp> file is a damaged copy that was set
+            # aside after the .bak was restored; it is safe to delete once you have your items back.
 
             store-location=outside
             """;
