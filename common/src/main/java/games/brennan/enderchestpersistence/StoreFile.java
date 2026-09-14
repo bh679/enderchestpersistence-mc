@@ -113,8 +113,9 @@ public final class StoreFile {
                 if (attempt < READ_RETRIES) pause();
             }
         }
+        // toString(), not getMessage(): a truncated gzip throws EOFException with a null message.
         LOGGER.warn("[EnderChestPersistence] I/O error reading {} after {} attempts: {}",
-                path, READ_RETRIES + 1, last == null ? "?" : last.getMessage());
+                path, READ_RETRIES + 1, last == null ? "?" : last.toString());
         return null;
     }
 
