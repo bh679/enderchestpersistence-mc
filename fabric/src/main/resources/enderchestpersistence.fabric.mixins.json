@@ -4,7 +4,8 @@
   "package": "games.brennan.enderchestpersistence.fabric.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "GameModeChangeMixin"
+    "GameModeChangeMixin",
+    "PlayerSaveMixin"
   ],
   "client": [],
   "server": [],

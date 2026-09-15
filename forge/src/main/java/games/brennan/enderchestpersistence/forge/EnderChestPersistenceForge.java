@@ -24,6 +24,7 @@ public final class EnderChestPersistenceForge {
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onServerStarting);
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onPlayerLogin);
         MinecraftForge.EVENT_BUS.addListener(EventPriority.LOW, EnderChestPersistenceForge::onPlayerChangeGameMode);
+        MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onPlayerSave);
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onPlayerLoggedOut);
         MinecraftForge.EVENT_BUS.addListener(EnderChestPersistenceForge::onServerStopping);
     }
@@ -45,6 +46,15 @@ public final class EnderChestPersistenceForge {
         if (event.isCanceled()) return;
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         EnderChestStore.swapGameMode(player, event.getNewGameMode());
+    }
+
+    /**
+     * Fires on autosave, {@code /save-all} and logout — checkpoint the chest so a crash cannot
+     * roll it back further than vanilla rolls back the rest of the player's data.
+     */
+    private static void onPlayerSave(PlayerEvent.SaveToFile event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        EnderChestStore.checkpoint(player);
     }
 
     private static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {

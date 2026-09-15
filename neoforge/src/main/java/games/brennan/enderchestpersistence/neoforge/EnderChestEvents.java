@@ -14,7 +14,7 @@ import java.util.UUID;
 
 /**
  * NeoForge event hooks that drive the Ender Chest persistence lifecycle.
- * All four hooks delegate to the loader-agnostic {@link EnderChestStore}.
+ * Every hook delegates to the loader-agnostic {@link EnderChestStore}.
  */
 @EventBusSubscriber(modid = EnderChestPersistenceNeoForge.MOD_ID)
 public final class EnderChestEvents {
@@ -45,6 +45,16 @@ public final class EnderChestEvents {
         if (event.isCanceled()) return;
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         EnderChestStore.swapGameMode(player, event.getNewGameMode());
+    }
+
+    /**
+     * Fires on autosave, {@code /save-all} and logout — checkpoint the chest so a crash cannot
+     * roll it back further than vanilla rolls back the rest of the player's data.
+     */
+    @SubscribeEvent
+    public static void onPlayerSave(PlayerEvent.SaveToFile event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        EnderChestStore.checkpoint(player);
     }
 
     @SubscribeEvent

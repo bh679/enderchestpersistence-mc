@@ -15,6 +15,10 @@ import net.fabricmc.loader.api.FabricLoader;
  * <p>Game-mode changes are handled by {@code GameModeChangeMixin} because
  * Fabric API 0.103.x (1.21.1) does not expose a native game-mode-change
  * event.</p>
+ *
+ * <p>Player saves (autosave, {@code /save-all}, logout) are handled by
+ * {@code PlayerSaveMixin} for the same reason — there is no player-save event in this
+ * Fabric API line either.</p>
  */
 public final class EnderChestPersistenceFabric implements ModInitializer {
 

@@ -44,6 +44,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * {@code .dat}), and a file that exists but cannot be read is never written over — the player gets an
  * empty chest for the session and an ERROR in the log, but their stash stays on disk
  * ({@link WriteGuard}).</p>
+ *
+ * <p>The file is written whenever the game saves the player — autosave, {@code /save-all},
+ * logout — and after every slot swap ({@link #checkpoint}), not only at logout. A crash therefore
+ * loses at most the last autosave interval, the same guarantee vanilla gives the rest of the
+ * player's data; before 0.5.0 it rolled the chest back to the previous logout.</p>
  */
 public final class EnderChestStore {
 
@@ -105,21 +110,37 @@ public final class EnderChestStore {
     // ---- Public API ----
 
     /**
-     * Snapshot {@code player}'s Ender Chest for their current game mode into
-     * the cache and write it to disk. Other game-mode slots are preserved.
-     * Called on player logout.
+     * Snapshot {@code player}'s Ender Chest for the slot it currently represents into the cache.
+     * Other slots are preserved. Called on player logout and from {@link #checkpoint}.
+     *
+     * @return true if the cached slot changed (so a flush has something new to write)
      */
-    public static void save(ServerPlayer player) {
-        if (!StoreLocation.enabled()) return;
+    public static boolean save(ServerPlayer player) {
+        if (!StoreLocation.enabled()) return false;
         UUID uuid = player.getUUID();
         // Write to the slot the live chest actually represents (APPLIED), which may
         // differ from the game-mode slot when a provider has locked the player.
         String key = APPLIED.getOrDefault(uuid, currentKey(player));
         ListTag items = player.getEnderChestInventory().createTag(player.registryAccess());
-        if (refuseIfBlocked(uuid, "save " + items.size() + " item stack(s) to slot '" + key + "'")) return;
-        updateCache(uuid, key, items);
-        LOGGER.debug("[EnderChestPersistence] saved {} item stack(s) for {} ({})",
-                items.size(), player.getName().getString(), key);
+        if (refuseIfBlocked(uuid, "save " + items.size() + " item stack(s) to slot '" + key + "'")) return false;
+        boolean changed = updateCache(uuid, key, items);
+        LOGGER.debug("[EnderChestPersistence] saved {} item stack(s) for {} ({}){}",
+                items.size(), player.getName().getString(), key, changed ? "" : " — unchanged");
+        return changed;
+    }
+
+    /**
+     * Snapshot the live chest and, if anything changed since the last write, put it on disk now.
+     * Called whenever the game saves the player (autosave, {@code /save-all}, logout), so a crash
+     * cannot roll the chest back further than vanilla rolls back the rest of the player's data.
+     * A quiet autosave writes nothing, so {@code .bak} is not rotated for no reason.
+     */
+    public static void checkpoint(ServerPlayer player) {
+        if (!StoreLocation.enabled()) return;
+        if (!save(player)) return;
+        flush(player.getUUID());
+        LOGGER.debug("[EnderChestPersistence] checkpointed {}'s Ender Chest to disk",
+                player.getName().getString());
     }
 
     /**
@@ -177,6 +198,7 @@ public final class EnderChestStore {
             return;
         }
         applySlot(player, oldKey, newKey);
+        flush(uuid);
         LOGGER.info("[EnderChestPersistence] swapped ender chest {} → {} for {}",
                 oldKey, newKey, player.getName().getString());
     }
@@ -201,6 +223,7 @@ public final class EnderChestStore {
             return;
         }
         applySlot(player, oldKey, newKey);
+        flush(uuid);
         LOGGER.info("[EnderChestPersistence] locked ender chest {} → {} for {}",
                 oldKey, newKey, player.getName().getString());
     }
@@ -208,7 +231,8 @@ public final class EnderChestStore {
     /**
      * Snapshot the live chest into {@code oldKey}, then load {@code newKey} into
      * the live container (clearing it if nothing is stored for {@code newKey}).
-     * Updates {@link #APPLIED} to {@code newKey}.
+     * Updates {@link #APPLIED} to {@code newKey}. Callers flush afterwards so the
+     * snapshot of {@code oldKey} survives a crash.
      */
     private static void applySlot(ServerPlayer player, String oldKey, String newKey) {
         UUID uuid = player.getUUID();
@@ -289,13 +313,28 @@ public final class EnderChestStore {
         return key;
     }
 
-    private static void updateCache(UUID uuid, String modeKey, ListTag items) {
+    /** @return true if the cached slot {@code modeKey} now differs from what it held before */
+    private static boolean updateCache(UUID uuid, String modeKey, ListTag items) {
+        boolean[] changed = {false};
         CACHE.compute(uuid, (k, existing) -> {
             CompoundTag root = existing != null ? existing : loadFromDisk(k);
             if (root == null) root = new CompoundTag();
-            root.put(modeKey, items);
+            changed[0] = putIfChanged(root, modeKey, items);
             return root;
         });
+        return changed[0];
+    }
+
+    /**
+     * Store {@code items} under {@code key} in {@code root} unless an identical list is already
+     * there. NBT equality is structural, so an untouched chest compares equal stack for stack.
+     *
+     * @return true if {@code root} was modified
+     */
+    static boolean putIfChanged(CompoundTag root, String key, ListTag items) {
+        if (root.contains(key, Tag.TAG_LIST) && items.equals(root.get(key))) return false;
+        root.put(key, items);
+        return true;
     }
 
     /**
