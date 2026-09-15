@@ -63,6 +63,16 @@ The guard is deliberately narrow: a player who empties their own chest still sav
 Refusing that would hand the items back on relog — a dupe. `restore()` logs its outcome at INFO on
 every login so an "empty chest" report can be diagnosed from `latest.log`.
 
+## Checkpoint on player save (since 0.5.0)
+
+`EnderChestStore.checkpoint` runs every time vanilla saves the player — autosave, `/save-all`,
+logout — from `PlayerEvent.SaveToFile` on NeoForge/Forge and `PlayerSaveMixin` (`PlayerList.save`)
+on Fabric. It writes `<uuid>.dat` only when the slot actually changed (`putIfChanged`, structural
+NBT compare), so an idle autosave neither touches the file nor rotates `.bak`. Slot swaps
+(`swapGameMode`, `refreshSlot`) also flush. Before 0.5.0 the file was written at logout only, so a
+crash rolled the chest back to the *previous* logout — while vanilla's autosaved `playerdata` had
+the fresh contents, which `restore()` then overwrote on the next login.
+
 ## Standards
 
 Follows the same rules as all bh679 sibling mods:
