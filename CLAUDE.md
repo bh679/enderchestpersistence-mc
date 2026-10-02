@@ -16,7 +16,8 @@ resets, with per-game-mode isolation. Extracted from Dungeon Train (bh679/dungeo
 
 - `common/` — `EnderChestStore` (core logic), `ConfigDir` (loader-agnostic path holder),
   `StoreMode`/`EcpConfig`/`StoreLocation`/`AppDataDir`/`StoreSeeder` (where the store lives),
-  `StoreFile`/`WriteGuard` (the .bak + never-overwrite-unreadable safety net)
+  `StoreFile`/`WriteGuard` (the .bak + never-overwrite-unreadable safety net),
+  `BackpackContents`/`SophisticatedBackpacksBridge` (backpack contents that live in the world)
 - `neoforge/` — `EnderChestPersistenceNeoForge` (@Mod), `EnderChestEvents` (@EventBusSubscriber)
 - `fabric/` — `EnderChestPersistenceFabric` (ModInitializer + Fabric events), `GameModeChangeMixin`
 - `forge/` — `EnderChestPersistenceForge` (@Mod + Forge events)
@@ -72,6 +73,17 @@ NBT compare), so an idle autosave neither touches the file nor rotates `.bak`. S
 (`swapGameMode`, `refreshSlot`) also flush. Before 0.5.0 the file was written at logout only, so a
 crash rolled the chest back to the *previous* logout — while vanilla's autosaved `playerdata` had
 the fresh contents, which `restore()` then overwrote on the next login.
+
+## Sophisticated Backpacks contents (since 0.5.1)
+
+A Sophisticated backpack stack carries only a UUID (`sophisticatedcore:storage_uuid`); its items
+live in the *world's* `data/sophisticatedbackpacks.dat`. Persisting the stack alone brought an empty
+backpack into the next world. `BackpackContents` copies each backpack's contents (nested ones too)
+into a `sophisticatedbackpacks` compound in the root tag on every save, and on restore / slot swap
+hands them to the world for any UUID the world has no contents for — the world copy always wins, so
+nothing is rolled back or duplicated. Unreferenced entries are pruned on save. The world is reached
+through `SophisticatedBackpacksBridge` by reflection (no compile dependency; no-op on Fabric or when
+SB is absent). The side compound is not a list, so `StoreFile.itemCount` ignores it.
 
 ## Standards
 
