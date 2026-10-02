@@ -113,7 +113,8 @@ public final class EnderChestStore {
      * Snapshot {@code player}'s Ender Chest for the slot it currently represents into the cache.
      * Other slots are preserved. Called on player logout and from {@link #checkpoint}.
      *
-     * @return true if the cached slot changed (so a flush has something new to write)
+     * @return true if the cached slot or the contents of a backpack in it changed (so a flush has
+     *         something new to write)
      */
     public static boolean save(ServerPlayer player) {
         if (!StoreLocation.enabled()) return false;
@@ -177,9 +178,11 @@ public final class EnderChestStore {
             return;
         }
         ListTag items = root.getList(key, Tag.TAG_COMPOUND);
+        int backpacks = BackpackContents.inject(root, items, SophisticatedBackpacksBridge.get());
         player.getEnderChestInventory().fromTag(items, player.registryAccess());
-        LOGGER.info("[EnderChestPersistence] restored {} item stack(s) for {} ({})",
-                items.size(), name, key);
+        LOGGER.info("[EnderChestPersistence] restored {} item stack(s) for {} ({}){}",
+                items.size(), name, key,
+                backpacks == 0 ? "" : ", with the contents of " + backpacks + " backpack(s)");
     }
 
     /**
@@ -242,12 +245,15 @@ public final class EnderChestStore {
             CompoundTag r = existing != null ? existing : loadFromDisk(k);
             if (r == null) r = new CompoundTag();
             r.put(oldKey, oldItems);
+            BackpackContents.capture(r, oldItems, SophisticatedBackpacksBridge.get());
             return r;
         });
 
         PlayerEnderChestContainer enderChest = player.getEnderChestInventory();
         if (root.contains(newKey, Tag.TAG_LIST)) {
-            enderChest.fromTag(root.getList(newKey, Tag.TAG_COMPOUND), player.registryAccess());
+            ListTag newItems = root.getList(newKey, Tag.TAG_COMPOUND);
+            BackpackContents.inject(root, newItems, SophisticatedBackpacksBridge.get());
+            enderChest.fromTag(newItems, player.registryAccess());
         } else {
             enderChest.clearContent();
         }
@@ -313,13 +319,20 @@ public final class EnderChestStore {
         return key;
     }
 
-    /** @return true if the cached slot {@code modeKey} now differs from what it held before */
+    /**
+     * Store {@code items} under {@code modeKey} and refresh the contents of any backpacks in it
+     * ({@link BackpackContents}) — a backpack's items can change while its stack does not.
+     *
+     * @return true if the cached entry now differs from what it held before
+     */
     private static boolean updateCache(UUID uuid, String modeKey, ListTag items) {
         boolean[] changed = {false};
         CACHE.compute(uuid, (k, existing) -> {
             CompoundTag root = existing != null ? existing : loadFromDisk(k);
             if (root == null) root = new CompoundTag();
-            changed[0] = putIfChanged(root, modeKey, items);
+            boolean slotChanged = putIfChanged(root, modeKey, items);
+            boolean backpacksChanged = BackpackContents.capture(root, items, SophisticatedBackpacksBridge.get());
+            changed[0] = slotChanged || backpacksChanged;
             return root;
         });
         return changed[0];
