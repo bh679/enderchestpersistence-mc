@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,6 +39,8 @@ class StoreMigrationTest {
     Path newInstance;
     @TempDir
     Path appData;
+    @TempDir
+    Path pclAppData;
 
     @BeforeEach
     @AfterEach
@@ -137,6 +140,56 @@ class StoreMigrationTest {
         assertEquals(legacy, EnderChestStore.file(PLAYER),
             "a machine-level store would be shared by every unrelated server on the host");
         assertFalse(EnderChestStore.seedFromInstanceIfNeeded(PLAYER));
+        assertFalse(Files.exists(appDataStash()));
+    }
+
+    /** The file a pre-0.7.0 build wrote while PCL pointed APPDATA into its game folder. */
+    private Path writePclStash(String contents) throws IOException {
+        Path file = pclAppData.resolve(StoreLocation.DIR_NAME).resolve(PLAYER + ".dat");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, contents, StandardCharsets.UTF_8);
+        return file;
+    }
+
+    @Test
+    void aChestLeftByALauncherRedirectedAppDataIsCarriedAcross() throws IOException {
+        // LitniR, 2026-10-20: PCL kept the "machine-level" store inside D:\Minecraft\.minecraft; the
+        // Modrinth app looked in the real roaming folder and found nothing.
+        Path pcl = writePclStash(STASH);
+
+        StoreLocation.init(StoreMode.OUTSIDE, false, newInstance, appData, List.of(pclAppData));
+
+        assertEquals(List.of(pclAppData.resolve(StoreLocation.DIR_NAME)), StoreLocation.legacyDirs());
+        LegacyCarryOver.Result result = EnderChestStore.carryOverIfNeeded(PLAYER);
+        assertEquals(LegacyCarryOver.Kind.COPIED, result.kind());
+        assertEquals(STASH, read(EnderChestStore.file(PLAYER)));
+        assertTrue(Files.isRegularFile(pcl), "the launcher's copy is left in place");
+    }
+
+    @Test
+    void theLegacyStoreWinsOverTheInstanceCopyWhenBothExist() throws IOException {
+        writeLegacyStash(oldInstance, "pre-0.3.0 instance copy");
+        writePclStash(STASH);
+
+        StoreLocation.init(StoreMode.OUTSIDE, false, oldInstance, appData, List.of(pclAppData));
+
+        assertEquals(LegacyCarryOver.Kind.COPIED, EnderChestStore.carryOverIfNeeded(PLAYER).kind());
+        assertEquals(STASH, read(EnderChestStore.file(PLAYER)),
+            "the launcher-redirected store is newer than anything inside the instance");
+    }
+
+    @Test
+    void insideAndDedicatedServersCarryNothingFromALegacyStore() throws IOException {
+        writePclStash(STASH);
+
+        StoreLocation.init(StoreMode.INSIDE, false, newInstance, appData, List.of(pclAppData));
+        assertEquals(List.of(), StoreLocation.legacyDirs());
+        assertEquals(LegacyCarryOver.Kind.NONE, EnderChestStore.carryOverIfNeeded(PLAYER).kind());
+
+        StoreLocation.reset();
+        StoreLocation.init(StoreMode.OUTSIDE, true, newInstance, appData, List.of(pclAppData));
+        assertEquals(List.of(), StoreLocation.legacyDirs());
+        assertEquals(LegacyCarryOver.Kind.NONE, EnderChestStore.carryOverIfNeeded(PLAYER).kind());
         assertFalse(Files.exists(appDataStash()));
     }
 }

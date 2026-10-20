@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.PlayerEnderChestContainer;
 import net.minecraft.world.level.GameType;
@@ -67,6 +68,15 @@ public final class EnderChestStore {
 
     /** External slot-key overrides, consulted in registration order. */
     private static final List<SlotKeyProvider> SLOT_PROVIDERS = new CopyOnWriteArrayList<>();
+
+    /**
+     * UUID → what {@link LegacyCarryOver} did on this login's first read of the file, waiting for
+     * {@link #restore} to tell the player. Cleared as soon as it is read.
+     */
+    private static final Map<UUID, LegacyCarryOver.Result> CARRIED = new ConcurrentHashMap<>();
+
+    static final String MSG_CARRIED_OVER = "enderchestpersistence.carried_over";
+    static final String MSG_CARRY_OVER_CONFLICT = "enderchestpersistence.carry_over_conflict";
 
     private EnderChestStore() {}
 
@@ -161,6 +171,7 @@ public final class EnderChestStore {
         // Record the slot now in effect even when nothing is stored for it (the
         // freshly-constructed live chest is empty, i.e. it already represents this slot).
         APPLIED.put(uuid, key);
+        tellAboutCarryOver(player);
         if (WriteGuard.isBlocked(uuid)) {
             LOGGER.error("[EnderChestPersistence] {}'s Ender Chest was NOT loaded — {} could not be read."
                     + " The chest will be empty this session and the file will not be overwritten;"
@@ -273,6 +284,7 @@ public final class EnderChestStore {
     public static void evict(UUID uuid) {
         CACHE.remove(uuid);
         APPLIED.remove(uuid);
+        CARRIED.remove(uuid);
         WriteGuard.clear(uuid);
     }
 
@@ -364,13 +376,39 @@ public final class EnderChestStore {
     }
 
     /**
+     * Bring a chest an older build left elsewhere into the live file, if there is one: first from the
+     * store directories a pre-0.7.0 build would have resolved on this machine
+     * ({@link LegacyCarryOver}), then from inside the instance ({@link #seedFromInstanceIfNeeded}).
+     * Only {@code outside} has anywhere to carry from.
+     */
+    static LegacyCarryOver.Result carryOverIfNeeded(UUID uuid) {
+        if (StoreLocation.mode() != StoreMode.OUTSIDE) return LegacyCarryOver.Result.NONE;
+        LegacyCarryOver.Result fromLegacy = LegacyCarryOver.run(uuid, file(uuid), StoreLocation.legacyDirs());
+        seedFromInstanceIfNeeded(uuid);
+        return fromLegacy;
+    }
+
+    /** Tell {@code player} what {@link #carryOverIfNeeded} did for them, once. */
+    private static void tellAboutCarryOver(ServerPlayer player) {
+        LegacyCarryOver.Result carried = CARRIED.remove(player.getUUID());
+        if (carried == null || !carried.happened()) return;
+        String from = String.valueOf(carried.source());
+        Component message = switch (carried.kind()) {
+            case CONFLICT -> Component.translatable(MSG_CARRY_OVER_CONFLICT, from);
+            default -> Component.translatable(MSG_CARRIED_OVER, from);
+        };
+        player.sendSystemMessage(message);
+    }
+
+    /**
      * Read the player's file through {@link StoreFile}. An unreadable file with no usable backup
      * blocks every write for this UUID until logout, so the file survives the session intact.
      *
      * @return the stored root tag, or null when nothing is stored or nothing could be read
      */
     private static CompoundTag loadFromDisk(UUID uuid) {
-        seedFromInstanceIfNeeded(uuid);
+        LegacyCarryOver.Result carried = carryOverIfNeeded(uuid);
+        if (carried.happened()) CARRIED.put(uuid, carried);
         StoreFile.Loaded loaded = StoreFile.read(file(uuid));
         if (loaded.outcome() == StoreFile.Outcome.UNREADABLE) {
             WriteGuard.block(uuid);

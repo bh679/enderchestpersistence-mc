@@ -47,6 +47,32 @@ Three things about this are load-bearing and easy to break:
 Everything that varies by platform is a parameter (`AppDataDir.resolve`, `StoreLocation.resolve`),
 so all three OS branches and the fallbacks are unit-tested wherever the tests happen to run.
 
+## Launcher-proof Windows store + carry-over (since 0.7.0)
+
+On Windows the `outside` store resolves from `%USERPROFILE%\AppData\Roaming`, not `%APPDATA%`.
+Launchers that isolate a game folder (PCL, widely used in China) start the game with `APPDATA`
+pointed into that folder, so under 0.3.0 to 0.6.0 the "machine-level" store was really per launcher:
+a player moving PCL -> Modrinth app found an empty chest (LitniR, 2026-10-20; the relay's archived
+log showed `storing at D:\Minecraft\.minecraft\enderchestpersistence`). For everyone else the two
+variables name the same directory, so nothing moves.
+
+`AppDataDir.legacyCandidates` reports exactly what a pre-0.7.0 build resolved with the same inputs
+(when it differs), `StoreLocation.Resolution.legacyDirs` carries it, and `LegacyCarryOver` runs on
+the first read of a player's file each login (`EnderChestStore.carryOverIfNeeded`, ahead of the
+instance seeding):
+
+- live file absent -> copy the candidate and its `.bak` across (`COPIED`);
+- otherwise fold it in with `StoreMerge` (`MERGED`): a slot the live chest lacks or holds empty takes
+  the candidate's; a slot with items on both sides is a `CONFLICT` and the live chest keeps its own.
+- The candidate `.dat` is never modified. A `<uuid>.dat.carried` marker beside it stops the same file
+  being merged or reported every login; a candidate newer than its marker is looked at again.
+- `restore()` tells the player in chat (`enderchestpersistence.carried_over` /
+  `carry_over_conflict`, lang files under `common/src/main/resources`, en_us + zh_cn).
+
+Only a login from the redirecting launcher can see its file (its `APPDATA` is set only while it
+runs). A player who switches launchers without ever running 0.7.0+ under the old one still copies
+the file by hand, as the config comments say.
+
 ## Safety net around the file (since 0.4.0)
 
 All reads and writes of `<uuid>.dat` go through `StoreFile`; `EnderChestStore` never touches

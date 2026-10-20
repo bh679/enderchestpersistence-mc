@@ -1,0 +1,4 @@
+{
+  "enderchestpersistence.carried_over": "你的末影箱已从 %s 转移过来。",
+  "enderchestpersistence.carry_over_conflict": "在 %s 发现了另一个末影箱。由于两个箱子在同一栏位都有物品，未进行合并。如需保留，请关闭游戏后手动复制该文件。"
+}

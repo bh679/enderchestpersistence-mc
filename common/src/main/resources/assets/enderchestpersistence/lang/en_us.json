@@ -1,0 +1,4 @@
+{
+  "enderchestpersistence.carried_over": "Your Ender Chest was carried over from %s.",
+  "enderchestpersistence.carry_over_conflict": "Another Ender Chest was found at %s. It was not merged because both chests hold items in the same slot. Copy it by hand with the game closed if you want it."
+}
