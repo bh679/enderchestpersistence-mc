@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.function.Predicate;
 
 /**
@@ -27,8 +28,17 @@ public final class StoreLocation {
 
     private StoreLocation() {}
 
-    /** The outcome of resolving the configured mode against this machine. */
-    public record Resolution(StoreMode mode, Path dir, Path instanceDir) {}
+    /**
+     * The outcome of resolving the configured mode against this machine. {@code legacyDirs} are the
+     * store directories an older build may have written on this machine (see
+     * {@link AppDataDir#legacyCandidates}), consulted by {@link LegacyCarryOver} and never written to
+     * except for its marker file.
+     */
+    public record Resolution(StoreMode mode, Path dir, Path instanceDir, List<Path> legacyDirs) {
+        public Resolution(StoreMode mode, Path dir, Path instanceDir) {
+            this(mode, dir, instanceDir, List.of());
+        }
+    }
 
     /**
      * Resolve the store for this server. Call once from the loader's server-starting hook, before any
@@ -39,7 +49,8 @@ public final class StoreLocation {
      *                        server on the host, which is never what an operator means
      */
     public static void init(boolean dedicatedServer) {
-        init(EcpConfig.readStoreMode(ConfigDir.get()), dedicatedServer, ConfigDir.get(), AppDataDir.resolve());
+        init(EcpConfig.readStoreMode(ConfigDir.get()), dedicatedServer, ConfigDir.get(), AppDataDir.resolve(),
+                AppDataDir.legacyCandidates());
     }
 
     /**
@@ -47,7 +58,13 @@ public final class StoreLocation {
      * temporary directories in tests instead of the developer's real application-data folder.
      */
     static void init(StoreMode configured, boolean dedicatedServer, Path configDir, Path appDataRoot) {
-        resolution = resolve(configured, dedicatedServer, configDir, appDataRoot,
+        init(configured, dedicatedServer, configDir, appDataRoot, List.of());
+    }
+
+    /** {@link #init(StoreMode, boolean, Path, Path)} plus the app-data roots an older build may have used. */
+    static void init(StoreMode configured, boolean dedicatedServer, Path configDir, Path appDataRoot,
+                     List<Path> legacyAppDataRoots) {
+        resolution = resolve(configured, dedicatedServer, configDir, appDataRoot, legacyAppDataRoots,
                 StoreLocation::ensureWritable);
 
         if (configured == StoreMode.OFF) {
@@ -59,6 +76,10 @@ public final class StoreLocation {
         } else {
             LOGGER.info("[EnderChestPersistence] store-location={} — storing at {}",
                     resolution.mode().configValue(), resolution.dir());
+            if (!resolution.legacyDirs().isEmpty()) {
+                LOGGER.info("[EnderChestPersistence] a chest left by an older build or another launcher"
+                        + " will be picked up from {}", resolution.legacyDirs());
+            }
         }
     }
 
@@ -70,6 +91,17 @@ public final class StoreLocation {
      */
     static Resolution resolve(StoreMode configured, boolean dedicatedServer, Path configDir,
                               Path appDataRoot, Predicate<Path> ensureWritable) {
+        return resolve(configured, dedicatedServer, configDir, appDataRoot, List.of(), ensureWritable);
+    }
+
+    /**
+     * {@link #resolve(StoreMode, boolean, Path, Path, Predicate)} with the app-data roots an older
+     * build may have used. They matter only under {@link StoreMode#OUTSIDE} on a client: the other
+     * outcomes never read a machine-level store, so they carry none.
+     */
+    static Resolution resolve(StoreMode configured, boolean dedicatedServer, Path configDir,
+                              Path appDataRoot, List<Path> legacyAppDataRoots,
+                              Predicate<Path> ensureWritable) {
         Path instanceDir = configDir.resolve(DIR_NAME);
         if (configured == StoreMode.OFF) {
             return new Resolution(StoreMode.OFF, null, instanceDir);
@@ -79,7 +111,11 @@ public final class StoreLocation {
         }
         Path outsideDir = appDataRoot.resolve(DIR_NAME);
         if (ensureWritable.test(outsideDir)) {
-            return new Resolution(StoreMode.OUTSIDE, outsideDir, instanceDir);
+            List<Path> legacyDirs = legacyAppDataRoots.stream()
+                    .map(root -> root.resolve(DIR_NAME))
+                    .filter(dir -> !dir.equals(outsideDir))
+                    .toList();
+            return new Resolution(StoreMode.OUTSIDE, outsideDir, instanceDir, legacyDirs);
         }
         LOGGER.error("[EnderChestPersistence] {} is not writable — falling back to store-location=inside."
                 + " Your Ender Chest is safe, but it will not follow you to another instance.", outsideDir);
@@ -132,6 +168,12 @@ public final class StoreLocation {
     public static Path instanceDir() {
         Resolution current = resolution;
         return current == null ? ConfigDir.get().resolve(DIR_NAME) : current.instanceDir();
+    }
+
+    /** Store directories an older build may have used on this machine; empty unless {@code outside}. */
+    public static List<Path> legacyDirs() {
+        Resolution current = resolution;
+        return current == null ? List.of() : current.legacyDirs();
     }
 
     /** Test seam: drop the resolved state so each test resolves from scratch. */

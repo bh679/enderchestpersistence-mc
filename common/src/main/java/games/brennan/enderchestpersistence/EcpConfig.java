@@ -105,6 +105,13 @@ public final class EcpConfig {
             # Switching from 'inside' to 'outside' copies your existing chest across on the next
             # login and leaves the original in place, so nothing is lost either way.
             #
+            # On Windows the 'outside' store is %USERPROFILE%\\AppData\\Roaming\\enderchestpersistence.
+            # Builds before 0.7.0 followed %APPDATA% instead, which some launchers (PCL, for one)
+            # point into the game folder -- so the chest looked lost after changing launcher. A chest
+            # found in that older location is now carried across on the next login from that
+            # launcher, and you are told in chat. If both locations hold items in the same slot the
+            # live chest keeps its own; copy the other file by hand with the game closed.
+            #
             # Next to each <uuid>.dat you may find <uuid>.dat.bak -- the last version that held any
             # items, kept automatically. If a chest ever comes up empty, close the game and rename
             # the .bak to .dat. A <uuid>.dat.corrupt-<timestamp> file is a damaged copy that was set

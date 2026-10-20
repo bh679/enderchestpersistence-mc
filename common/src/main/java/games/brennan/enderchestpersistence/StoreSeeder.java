@@ -52,4 +52,22 @@ public final class StoreSeeder {
                 + " — the original was left in place.", source, destination);
         return true;
     }
+
+    /**
+     * Copy the {@code .bak} beside {@code source} to sit beside {@code destination}, when one exists
+     * there and none exists here. Best-effort: a carried chest without its backup is still a carried
+     * chest.
+     */
+    public static void copyBackupAlongside(Path destination, Path source) {
+        if (destination == null || source == null) return;
+        Path from = StoreFile.bak(source);
+        Path to = StoreFile.bak(destination);
+        if (!Files.isRegularFile(from) || Files.exists(to)) return;
+        try {
+            Files.copy(from, to, StandardCopyOption.COPY_ATTRIBUTES);
+        } catch (IOException e) {
+            LOGGER.warn("[EnderChestPersistence] could not carry the backup {} over to {}: {}",
+                    from, to, e.getMessage());
+        }
+    }
 }
